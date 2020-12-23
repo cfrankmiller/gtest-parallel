@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 
 if sys.version_info.major >= 3:
     long = int
@@ -302,6 +303,90 @@ class TaskManager(object):
         self.global_exit_code = task.exit_code
 
 
+class ResultsXMLLogger(object):
+  """
+  Builds an XML tree containing test results as well as a stack trace, if 
+  necessary. Output XML tree to a document.
+  """
+  def __init__(self):
+    root = ET.Element('TestRun')
+    root.append(ET.Element('Project'))
+    root.append(ET.Element('FailedTests'))
+    root.append(ET.Element('SuccessfulTests'))
+    
+    statistics = ET.SubElement(root, 'Statistics')
+    statistics.append(ET.Element('Tests'))
+    statistics.append(ET.Element('FailuresTotal'))
+    statistics.append(ET.Element('Errors'))
+    statistics.append(ET.Element('Failures'))
+
+    self.tree = ET.ElementTree(root)
+
+  def write_to_XML(self, task, output_dir):
+    if output_dir is None:
+      return
+
+    # build test message - stdout/stderr between start and end of test
+    # TODO: refactor into another helper?
+    test_message = ""
+    start_pattern = re.compile(".*\[ *RUN *\].*" + task.test_name)
+    success_pattern = re.compile(".*\[ *OK *\].*" + task.test_name)
+    failure_pattern = re.compile(".*\[ *FAILED *\].*" + task.test_name)
+    with open(task.log_file) as log:
+      for line in log:
+        if start_pattern.search(line.strip()) is not None:
+          break
+      for line in log:
+        stripped = line.strip()
+        if ((success_pattern.search(stripped) is not None) or 
+            (failure_pattern.search(stripped) is not None)):
+          break
+        test_message += line
+    
+    # build and output XML tree 
+    root = self.tree.getroot()
+
+    project_name = os.path.basename(os.path.splitext(task.test_binary)[0]) # strip extension, path
+    root.find('Project').text = project_name
+
+    runtime_seconds = str(task.runtime_ms / 1000.0)
+    stats = root.find('Statistics')
+    stats.find('Tests').text = '1'
+    stats.find('Errors').text = '0' # TODO: always zero?
+
+    if task.exit_code != 0:
+      failed = root.find('FailedTests')
+      failed_test = ET.SubElement(failed, 'FailedTest', id='1')
+      ET.SubElement(failed_test, 'Name').text = task.test_name
+      ET.SubElement(failed_test, 'FailureType').text = 'Assertion' # TODO: always assertion?
+
+      # TODO: parse location from expect/assert failure
+      # TODO: how to handle multiple failures from EXPECTS?
+
+      ET.SubElement(failed_test, 'Message').text = test_message
+      ET.SubElement(failed_test, 'Time').text = runtime_seconds
+      stats.find('Failures').text = '1'
+      stats.find('FailuresTotal').text = '1'
+    else:
+      success = root.find('SuccessfulTests')
+      success_test = ET.SubElement(success, 'SuccessfulTest', id='1')
+      ET.SubElement(success_test, 'Name').text = task.test_name
+      ET.SubElement(success_test, 'Message').text = test_message
+      ET.SubElement(success_test, 'Time').text = runtime_seconds
+      stats.find('Failures').text = '0'
+      stats.find('FailuresTotal').text = '0'
+
+
+    # create _results directory in the specified output dir, if it doesn't exist
+    results_dir = os.path.join(output_dir, project_name + '_results')
+    os.makedirs(results_dir, exist_ok=True)
+
+    # TODO: pretty-print to the XML doc?
+    formatted_test_name = task.test_name.replace('.', '_')
+    output_filename = os.path.join(results_dir, formatted_test_name + '_results.xml')
+    self.tree.write(output_filename, encoding='ISO-8859-1')
+
+
 class FilterFormat(object):
   def __init__(self, output_dir):
     if sys.stdout.isatty():
@@ -357,7 +442,12 @@ class FilterFormat(object):
           % (self.finished_tasks, self.total_tasks, task.test_name,
              task.exit_code, task.runtime_ms))
 
-    if self.output_dir is None:
+    # TODO: remove test logs entirely in favor of _results.xml files?
+    if self.output_dir is not None:
+      #read from task log, put into results XML
+      xml_logger = ResultsXMLLogger()
+      xml_logger.write_to_XML(task, self.output_dir)
+    else:
       # Try to remove the file 100 times (sleeping for 0.1 second in between).
       # This is a workaround for a process handle seemingly holding on to the
       # file for too long inside os.subprocess. This workaround is in place
