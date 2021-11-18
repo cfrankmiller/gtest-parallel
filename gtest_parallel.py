@@ -580,6 +580,9 @@ def find_tests(binaries, additional_args, options, times):
     if options.gtest_filter != '':
       list_command += ['--gtest_filter=' + options.gtest_filter]
 
+    if options.size != '':
+      list_command += ['--size=' + options.size]
+
     try:
       test_list = subprocess.check_output(list_command,
                                           stderr=subprocess.STDOUT)
@@ -709,6 +712,8 @@ def default_options_parser():
                     help='color output')
   parser.add_option('--gtest_filter', type='string', default='',
                     help='test filter')
+  parser.add_option('--size', type='string', default='', 
+                    help='select a test size (S, M, L, XL, *) to run')
   parser.add_option('--gtest_also_run_disabled_tests', action='store_true',
                     default=False, help='run disabled tests too')
   parser.add_option('--print_test_times', action='store_true', default=False,
